@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
 from typing import Dict, List
-import google.generativeai as genai
+from groq import Groq
 
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+# Configure Groq client
+client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 class BaseAgent:
     def __init__(self, name: str):
@@ -15,7 +16,8 @@ class BaseAgent:
 
 class WebBrowserTools:
     def __init__(self):
-        self.gemini = genai.GenerativeModel(model_name="gemini-1.5-pro")
+        # Using Groq model (you can change to another supported model, e.g., "llama-3.1-70b-versatile")
+        self.model = "llama-3.1-70b-versatile"
 
     def scrape_company_info(self, company_name: str) -> Dict:
         try:
@@ -25,11 +27,11 @@ class WebBrowserTools:
                 data = response.json()
                 description = data.get("extract", "")
                 if not description or "may refer to:" in description:
-                    description = self.generate_description_with_gemini(company_name)
+                    description = self.generate_description_with_groq(company_name)
             else:
-                description = self.generate_description_with_gemini(company_name)
+                description = self.generate_description_with_groq(company_name)
         except Exception:
-            description = self.generate_description_with_gemini(company_name)
+            description = self.generate_description_with_groq(company_name)
 
         offerings = self.generate_offerings(description)
         strategic_focus = self.generate_focus_areas(description)
@@ -40,21 +42,30 @@ class WebBrowserTools:
             "focus_areas": strategic_focus
         }
 
-    def generate_description_with_gemini(self, company_name: str) -> str:
+    def generate_description_with_groq(self, company_name: str) -> str:
         prompt = f"Please write a 2-3 line professional description about the company '{company_name}'."
-        response = self.gemini.generate_content(prompt)
-        return response.text.strip()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content.strip()
 
     def generate_focus_areas(self, description: str) -> List[str]:
         prompt = f"Based on the following description, suggest 2-3 strategic focus areas for the company:\n\n{description}"
-        response = self.gemini.generate_content(prompt)
-        focus_text = response.text.strip()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        focus_text = response.choices[0].message.content.strip()
         return [area.strip("- ") for area in focus_text.split("\n") if area.strip()]
 
     def generate_offerings(self, description: str) -> List[str]:
         prompt = f"Based on the following company description, list 2-3 main products or services they offer:\n\n{description}"
-        response = self.gemini.generate_content(prompt)
-        offerings_text = response.text.strip()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        offerings_text = response.choices[0].message.content.strip()
         return [item.strip("- ") for item in offerings_text.split("\n") if item.strip()]
 
 class ResearchAgent(BaseAgent):
@@ -94,9 +105,9 @@ class ResearchAgent(BaseAgent):
 class MarketAnalysisAgent(BaseAgent):
     def __init__(self):
         super().__init__("Market Analysis Agent")
-        self.model = genai.GenerativeModel(model_name="gemini-1.5-pro")
+        self.model = "llama-3.1-70b-versatile"
 
-    def generate_use_cases(self, industry_data: Dict) -> List[Dict]:
+    def generate_use_cases(self, industry_data: Dict) -> str:
         self.log_action("Generating AI/ML/GenAI use cases")
         prompt = f"""You are an AI business consultant.
 Analyze the following industry and suggest AI/ML and Generative AI (GenAI) use cases:
@@ -113,8 +124,11 @@ Please suggest:
 
 Respond with a readable bullet-point format.
 """
-        response = self.model.generate_content(prompt)
-        return response.text.strip()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content.strip()
 
 class MultiAgentSystem:
     def __init__(self):
@@ -129,6 +143,7 @@ class MultiAgentSystem:
             "ai_use_cases": use_cases
         }
 
+# Streamlit UI
 st.set_page_config(page_title="Multi-Agent AI Use Case Generator", page_icon="🤖")
 st.title("🤖 Multi-Agent AI Use Case Generator")
 st.write("Enter a company name to generate AI/ML/GenAI use cases and resources:")
