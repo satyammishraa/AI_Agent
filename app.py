@@ -8,7 +8,14 @@ from groq import Groq
 # CONFIG
 # -----------------------
 MODEL_NAME = "llama-3.2-70b-versatile"   # fixed model
-client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+
+# Safe API key retrieval
+api_key = st.secrets.get("GROQ_API_KEY")
+if not api_key:
+    st.error("❌ GROQ_API_KEY is missing. Please add it in .streamlit/secrets.toml")
+    st.stop()
+
+client = Groq(api_key=api_key)
 
 
 # -----------------------
@@ -24,15 +31,15 @@ class WebBrowserTools:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
-                # Grab the first paragraph
                 para = soup.find("p")
-                if para:
-                    description = para.get_text().strip()
-                else:
-                    description = self.generate_description_with_groq(company_name)
+                description = para.get_text().strip() if para else None
             else:
-                description = self.generate_description_with_groq(company_name)
+                description = None
         except Exception:
+            description = None
+
+        # If no description from wiki → use Groq
+        if not description:
             description = self.generate_description_with_groq(company_name)
 
         offerings = self.generate_offerings(description)
@@ -59,7 +66,7 @@ class WebBrowserTools:
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.choices[0].message.content.strip().split("\n")
+        return [item.strip("-• ") for item in response.choices[0].message.content.strip().split("\n") if item.strip()]
 
     def generate_focus_areas(self, description: str) -> List[str]:
         prompt = f"From this description, what strategic focus areas does the company have? (e.g., AI, Cloud, Healthcare)"
@@ -67,7 +74,7 @@ class WebBrowserTools:
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.choices[0].message.content.strip().split("\n")
+        return [item.strip("-• ") for item in response.choices[0].message.content.strip().split("\n") if item.strip()]
 
 
 # -----------------------
@@ -89,7 +96,7 @@ class MarketAnalysisAgent:
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.choices[0].message.content.strip().split("\n")
+        return [item.strip("-• ") for item in response.choices[0].message.content.strip().split("\n") if item.strip()]
 
 
 class MultiAgentSystem:
@@ -106,7 +113,9 @@ class MultiAgentSystem:
 # -----------------------
 # STREAMLIT APP
 # -----------------------
+st.set_page_config(page_title="AI Use Case Generator", page_icon="🤖")
 st.title("🤖 Multi-Agent AI Use Case Generator")
+
 company_name = st.text_input("Enter a company name to generate AI/ML/GenAI use cases and resources:")
 
 if company_name:
@@ -128,6 +137,7 @@ if company_name:
     st.subheader("🚀 AI/GenAI Use Cases")
     for case in results["use_cases"]:
         st.write("-", case)
+
 
 
 
