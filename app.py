@@ -1,150 +1,134 @@
 import streamlit as st
 import requests
-from groq import Groq
 from bs4 import BeautifulSoup
+from typing import Dict, List
+from groq import Groq
 
-# ----------------------------
+# -----------------------
 # CONFIG
-# ----------------------------
-MODEL_NAME = "llama-3.1-70b-versatile"
-
-# Initialize Groq client
+# -----------------------
+MODEL_NAME = "llama-3.2-70b-versatile"   # fixed model
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 
-# ----------------------------
-# TOOLS
-# ----------------------------
+# -----------------------
+# WEB SCRAPER
+# -----------------------
 class WebBrowserTools:
     def __init__(self, model: str = MODEL_NAME):
         self.model = model
 
-    def scrape_company_info(self, company_name: str) -> str:
-        """Try Wikipedia API, fallback to scraping"""
+    def scrape_company_info(self, company_name: str) -> Dict:
         try:
-            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{company_name}"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if "extract" in data:
-                    return data["extract"]
+            url = f"https://en.wikipedia.org/wiki/{company_name.replace(' ', '_')}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                # Grab the first paragraph
+                para = soup.find("p")
+                if para:
+                    description = para.get_text().strip()
+                else:
+                    description = self.generate_description_with_groq(company_name)
+            else:
+                description = self.generate_description_with_groq(company_name)
         except Exception:
-            pass
+            description = self.generate_description_with_groq(company_name)
 
-        # fallback to scraping HTML
-        try:
-            html_url = f"https://en.wikipedia.org/wiki/{company_name}"
-            res = requests.get(html_url, timeout=10)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, "html.parser")
-                paragraphs = soup.select("p")
-                if paragraphs:
-                    return paragraphs[0].get_text().strip()
-        except Exception:
-            pass
-
-        return ""  # nothing found
-
-
-class ResearchAgent:
-    def __init__(self, browser_tools: WebBrowserTools, model: str = MODEL_NAME):
-        self.browser_tools = browser_tools
-        self.model = model
-
-    def research_company(self, company_name: str) -> dict:
-        description = self.browser_tools.scrape_company_info(company_name)
-        if not description:
-            description = "No reliable description found."
+        offerings = self.generate_offerings(description)
+        focus = self.generate_focus_areas(description)
 
         return {
             "company": company_name,
-            "industry": "General Industry",
             "description": description,
-            "offerings": [description] if description else [],
-            "strategic_focus": ["AI / Machine Learning"],
+            "offerings": offerings,
+            "focus": focus,
         }
 
+    def generate_description_with_groq(self, company_name: str) -> str:
+        prompt = f"Write a 2-3 line professional description about {company_name}."
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip()
 
-class UseCaseAgent:
-    def __init__(self, model: str = MODEL_NAME):
-        self.model = model
+    def generate_offerings(self, description: str) -> List[str]:
+        prompt = f"From this description, list the main offerings/products/services:\n\n{description}"
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip().split("\n")
 
-    def generate_use_cases(self, company_info: dict) -> list:
-        prompt = f"""
-        You are an AI strategist. Based on the following company profile, 
-        generate 5 concrete AI/ML/GenAI use cases that align with its business.
-
-        Company Info:
-        Name: {company_info['company']}
-        Industry: {company_info['industry']}
-        Description: {company_info['description']}
-        Offerings: {', '.join(company_info['offerings'])}
-        Strategic Focus Areas: {', '.join(company_info['strategic_focus'])}
-        """
-
-        try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=500,
-            )
-            content = response.choices[0].message.content
-            return content.split("\n")
-        except Exception:
-            return ["❌ API error — could not generate use cases."]
+    def generate_focus_areas(self, description: str) -> List[str]:
+        prompt = f"From this description, what strategic focus areas does the company have? (e.g., AI, Cloud, Healthcare)"
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip().split("\n")
 
 
-# ----------------------------
-# ORCHESTRATOR
-# ----------------------------
-class Orchestrator:
+# -----------------------
+# AGENTS & ORCHESTRATOR
+# -----------------------
+class ResearchAgent:
     def __init__(self):
         self.browser_tools = WebBrowserTools()
-        self.research_agent = ResearchAgent(self.browser_tools)
-        self.use_case_agent = UseCaseAgent()
 
-    def run(self, company_name: str):
+    def research_company(self, company_name: str) -> Dict:
+        return self.browser_tools.scrape_company_info(company_name)
+
+
+class MarketAnalysisAgent:
+    def generate_use_cases(self, company_info: Dict) -> List[str]:
+        description = company_info["description"]
+        prompt = f"Suggest 5 AI/GenAI/ML use cases for the following company:\n\n{description}"
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip().split("\n")
+
+
+class MultiAgentSystem:
+    def __init__(self):
+        self.research_agent = ResearchAgent()
+        self.market_agent = MarketAnalysisAgent()
+
+    def run(self, company_name: str) -> Dict:
         company_info = self.research_agent.research_company(company_name)
-        use_cases = self.use_case_agent.generate_use_cases(company_info)
-        return company_info, use_cases
+        use_cases = self.market_agent.generate_use_cases(company_info)
+        return {"company_info": company_info, "use_cases": use_cases}
 
 
-# ----------------------------
+# -----------------------
 # STREAMLIT APP
-# ----------------------------
-st.set_page_config(page_title="🤖 Multi-Agent AI Use Case Generator", layout="wide")
-
+# -----------------------
 st.title("🤖 Multi-Agent AI Use Case Generator")
-st.write("Enter a company name to generate AI/ML/GenAI use cases and resources:")
+company_name = st.text_input("Enter a company name to generate AI/ML/GenAI use cases and resources:")
 
-company_name = st.text_input("Company Name")
-
-if st.button("Generate Use Cases") and company_name:
-    orchestrator = Orchestrator()
-    with st.spinner("🔎 Researching company and generating ideas..."):
-        company_info, use_cases = orchestrator.run(company_name)
+if company_name:
+    orchestrator = MultiAgentSystem()
+    with st.spinner("Agents are working..."):
+        results = orchestrator.run(company_name)
 
     st.success("✅ Completed!")
+    info = results["company_info"]
 
     st.subheader("📄 Company Information")
-    st.write(f"**Company:** {company_info['company']}")
-    st.write(f"**Industry:** {company_info['industry']}")
-    st.write(f"**Description:** {company_info['description']}")
-
-    if company_info["offerings"]:
-        st.write("**Offerings:**")
-        for o in company_info["offerings"]:
-            st.write(f"- {o}")
-
+    st.write(f"**Company:** {info['company']}")
+    st.write(f"**Description:** {info['description']}")
+    st.write("**Offerings:**")
+    st.write(info["offerings"])
     st.write("**Strategic Focus Areas:**")
-    for f in company_info["strategic_focus"]:
-        st.write(f"- {f}")
+    st.write(info["focus"])
 
     st.subheader("🚀 AI/GenAI Use Cases")
-    for uc in use_cases:
-        if uc.strip():
-            st.write(f"- {uc.strip()}")
+    for case in results["use_cases"]:
+        st.write("-", case)
+
 
 
 
