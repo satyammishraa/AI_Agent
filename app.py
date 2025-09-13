@@ -16,13 +16,15 @@ class BaseAgent:
 
 class WebBrowserTools:
     def __init__(self):
-        # Using Groq model (you can change to another supported model, e.g., "llama-3.1-70b-versatile")
         self.model = "llama-3.1-70b-versatile"
 
     def scrape_company_info(self, company_name: str) -> Dict:
+        """Scrape Wikipedia for company info, fallback to Groq if not found."""
         try:
             company_name_formatted = company_name.replace(' ', '_')
-            response = requests.get(f"https://en.wikipedia.org/api/rest_v1/page/summary/{company_name_formatted}")
+            response = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{company_name_formatted}"
+            )
             if response.status_code == 200:
                 data = response.json()
                 description = data.get("extract", "")
@@ -43,30 +45,57 @@ class WebBrowserTools:
         }
 
     def generate_description_with_groq(self, company_name: str) -> str:
-        prompt = f"Please write a 2-3 line professional description about the company '{company_name}'."
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content.strip()
+        prompt = f"Write a concise 2-3 line professional description about the company '{company_name}'."
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=200
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print("Groq API Error (description):", e)
+            return "Description unavailable."
 
     def generate_focus_areas(self, description: str) -> List[str]:
-        prompt = f"Based on the following description, suggest 2-3 strategic focus areas for the company:\n\n{description}"
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        focus_text = response.choices[0].message.content.strip()
-        return [area.strip("- ") for area in focus_text.split("\n") if area.strip()]
+        prompt = f"Suggest 2-3 strategic focus areas for the company based on this description:\n\n{description}"
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a strategic consultant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=200
+            )
+            focus_text = response.choices[0].message.content.strip()
+            return [area.strip("-• ") for area in focus_text.split("\n") if area.strip()]
+        except Exception as e:
+            print("Groq API Error (focus):", e)
+            return []
 
     def generate_offerings(self, description: str) -> List[str]:
-        prompt = f"Based on the following company description, list 2-3 main products or services they offer:\n\n{description}"
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        offerings_text = response.choices[0].message.content.strip()
-        return [item.strip("- ") for item in offerings_text.split("\n") if item.strip()]
+        prompt = f"List 2-3 main products or services the company offers based on this description:\n\n{description}"
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert business analyst."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=200
+            )
+            offerings_text = response.choices[0].message.content.strip()
+            return [item.strip("-• ") for item in offerings_text.split("\n") if item.strip()]
+        except Exception as e:
+            print("Groq API Error (offerings):", e)
+            return []
 
 class ResearchAgent(BaseAgent):
     def __init__(self):
@@ -124,11 +153,20 @@ Please suggest:
 
 Respond with a readable bullet-point format.
 """
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a consultant specializing in AI for business."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print("Groq API Error (use cases):", e)
+            return "No use cases generated due to API error."
 
 class MultiAgentSystem:
     def __init__(self):
@@ -143,7 +181,7 @@ class MultiAgentSystem:
             "ai_use_cases": use_cases
         }
 
-# Streamlit UI
+# ---------------- Streamlit UI ----------------
 st.set_page_config(page_title="Multi-Agent AI Use Case Generator", page_icon="🤖")
 st.title("🤖 Multi-Agent AI Use Case Generator")
 st.write("Enter a company name to generate AI/ML/GenAI use cases and resources:")
@@ -176,3 +214,4 @@ if st.button("Run Agents 🚀"):
 
     else:
         st.warning("Please enter a company name first!")
+
