@@ -1,82 +1,151 @@
-# app.py (updated parts only)
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup   # new import
+from groq import Groq
+from bs4 import BeautifulSoup
 
+# ----------------------------
+# CONFIG
+# ----------------------------
+MODEL_NAME = "llama-3.1-70b-versatile"
+
+# Initialize Groq client
+client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+
+
+# ----------------------------
+# TOOLS
+# ----------------------------
 class WebBrowserTools:
     def __init__(self, model: str = MODEL_NAME):
         self.model = model
 
-    def scrape_company_info(self, company_name: str) -> Dict:
-        """Try multiple fallbacks to get a reliable description."""
-        description = self._fetch_wikipedia_summary(company_name)
+    def scrape_company_info(self, company_name: str) -> str:
+        """Try Wikipedia API, fallback to scraping"""
+        try:
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{company_name}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if "extract" in data:
+                    return data["extract"]
+        except Exception:
+            pass
 
-        if not description:  # fallback to LLM if wiki fails
-            description = self.generate_description_with_groq(company_name)
+        # fallback to scraping HTML
+        try:
+            html_url = f"https://en.wikipedia.org/wiki/{company_name}"
+            res = requests.get(html_url, timeout=10)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                paragraphs = soup.select("p")
+                if paragraphs:
+                    return paragraphs[0].get_text().strip()
+        except Exception:
+            pass
 
-        if not description:  # ultimate fallback
-            description = f"{company_name} is a well-known company operating globally."
+        return ""  # nothing found
 
-        offerings = self.generate_offerings(description)
-        if not offerings:
-            offerings = _simple_offerings_from_description(description)
 
-        strategic_focus = self.generate_focus_areas(description)
-        if not strategic_focus:
-            strategic_focus = _simple_focus_from_description(description)
+class ResearchAgent:
+    def __init__(self, browser_tools: WebBrowserTools, model: str = MODEL_NAME):
+        self.browser_tools = browser_tools
+        self.model = model
+
+    def research_company(self, company_name: str) -> dict:
+        description = self.browser_tools.scrape_company_info(company_name)
+        if not description:
+            description = "No reliable description found."
 
         return {
+            "company": company_name,
+            "industry": "General Industry",
             "description": description,
-            "products": offerings,
-            "focus_areas": strategic_focus
+            "offerings": [description] if description else [],
+            "strategic_focus": ["AI / Machine Learning"],
         }
 
-    def _fetch_wikipedia_summary(self, company_name: str) -> str:
-        """First try the official Wikipedia API, then fallback to scraping HTML."""
+
+class UseCaseAgent:
+    def __init__(self, model: str = MODEL_NAME):
+        self.model = model
+
+    def generate_use_cases(self, company_info: dict) -> list:
+        prompt = f"""
+        You are an AI strategist. Based on the following company profile, 
+        generate 5 concrete AI/ML/GenAI use cases that align with its business.
+
+        Company Info:
+        Name: {company_info['company']}
+        Industry: {company_info['industry']}
+        Description: {company_info['description']}
+        Offerings: {', '.join(company_info['offerings'])}
+        Strategic Focus Areas: {', '.join(company_info['strategic_focus'])}
+        """
+
         try:
-            company_name_formatted = company_name.replace(" ", "_")
-            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{company_name_formatted}"
-            resp = requests.get(url, timeout=8)
-
-            if resp.status_code == 200:
-                data = resp.json()
-                desc = data.get("extract", "")
-                if desc and "may refer to" not in desc.lower():
-                    return desc
-        except Exception as e:
-            print("Wiki summary API error:", e)
-
-        # Fallback: scrape first paragraph from Wikipedia HTML
-        try:
-            html_url = f"https://en.wikipedia.org/wiki/{company_name.replace(' ', '_')}"
-            html_resp = requests.get(html_url, timeout=8)
-            if html_resp.status_code == 200:
-                soup = BeautifulSoup(html_resp.text, "html.parser")
-                p_tags = soup.select("p")
-                for p in p_tags:
-                    text = p.get_text(strip=True)
-                    if text and len(text) > 50 and "may refer to" not in text.lower():
-                        return text
-        except Exception as e:
-            print("Wiki HTML scrape error:", e)
-
-        return ""
-
-    def generate_description_with_groq(self, company_name: str) -> str:
-        """Fallback LLM description generator"""
-        prompt = f"Write a concise 2-3 line professional description about the company '{company_name}'."
-        try:
-            text = self._call_chat_completion(
-                prompt,
-                system_role="You are a concise business copywriter.",
-                max_tokens=180
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=500,
             )
-            return text.strip()
-        except Exception as e:
-            st.session_state.setdefault("last_api_error", [])
-            st.session_state["last_api_error"].append(str(e))
-            print("Groq API Error (description):", e)
-            return ""   # return empty → triggers wiki fallback
+            content = response.choices[0].message.content
+            return content.split("\n")
+        except Exception:
+            return ["❌ API error — could not generate use cases."]
+
+
+# ----------------------------
+# ORCHESTRATOR
+# ----------------------------
+class Orchestrator:
+    def __init__(self):
+        self.browser_tools = WebBrowserTools()
+        self.research_agent = ResearchAgent(self.browser_tools)
+        self.use_case_agent = UseCaseAgent()
+
+    def run(self, company_name: str):
+        company_info = self.research_agent.research_company(company_name)
+        use_cases = self.use_case_agent.generate_use_cases(company_info)
+        return company_info, use_cases
+
+
+# ----------------------------
+# STREAMLIT APP
+# ----------------------------
+st.set_page_config(page_title="🤖 Multi-Agent AI Use Case Generator", layout="wide")
+
+st.title("🤖 Multi-Agent AI Use Case Generator")
+st.write("Enter a company name to generate AI/ML/GenAI use cases and resources:")
+
+company_name = st.text_input("Company Name")
+
+if st.button("Generate Use Cases") and company_name:
+    orchestrator = Orchestrator()
+    with st.spinner("🔎 Researching company and generating ideas..."):
+        company_info, use_cases = orchestrator.run(company_name)
+
+    st.success("✅ Completed!")
+
+    st.subheader("📄 Company Information")
+    st.write(f"**Company:** {company_info['company']}")
+    st.write(f"**Industry:** {company_info['industry']}")
+    st.write(f"**Description:** {company_info['description']}")
+
+    if company_info["offerings"]:
+        st.write("**Offerings:**")
+        for o in company_info["offerings"]:
+            st.write(f"- {o}")
+
+    st.write("**Strategic Focus Areas:**")
+    for f in company_info["strategic_focus"]:
+        st.write(f"- {f}")
+
+    st.subheader("🚀 AI/GenAI Use Cases")
+    for uc in use_cases:
+        if uc.strip():
+            st.write(f"- {uc.strip()}")
+
 
 
 
